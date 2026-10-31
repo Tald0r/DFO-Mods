@@ -79,7 +79,7 @@ Node.js 18 or newer runs the scripts. A portable copy works too: put it at
 The **DFO Online (Mods)** shortcut (desktop entry, desktop shortcut, or
 `play.command`) runs `modloader/play.mjs`. Use it instead of the game's own icon:
 
-- It starts a small server on `127.0.0.1` (a free port, chosen each time). The
+- It starts a small server on `127.0.0.1` (normally fixed port 47831). The
   server answers for the game's files: the build the store plays, with the mods
   applied as they are read. Then it starts the launcher pointed at that address.
 - It stays up while the game runs and stops when the game closes. Nothing runs
@@ -285,3 +285,14 @@ turns the old switches into rules, so nothing is lost. The old
 
 See [DEVELOPING.md](DEVELOPING.md) for the loader contract, patch lists, anchor
 philosophy, and the full skill formula.
+
+## Explicit renderer payloads
+
+A trusted local launcher can select a separate, complete renderer payload
+without changing the installed game store. This is an alternative-client mode,
+not a promise that arbitrary plugins work on that client. Implementation and
+usage are in [DEVELOPING.md](DEVELOPING.md#explicit-renderer-payloads).
+
+The generic loader and public mods can remain public while a separately
+provided payload stays in another private repository. Do not commit or publish
+private payload files in this repository. Normal stock-client play is unchanged.

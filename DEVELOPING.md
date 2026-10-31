@@ -293,7 +293,7 @@ Runtime pieces:
 
 1. resolves the game (workspace `*.AppImage`, `game-path.txt`, installed
    asar→exe/app, or `--app=`),
-2. starts `lib/serve.mjs` on `127.0.0.1` (an OS-chosen port),
+2. starts `lib/serve.mjs` on `127.0.0.1` (normally fixed port 47831),
 3. starts the launcher with `DAGGER_DEV_URL` set to that server's game page,
    and stays up while the game runs (the launcher can restart itself, so it waits
    for the game to close, not just for its own child).
@@ -321,3 +321,42 @@ Earlier versions wrote into the store (`Game/.dfo-mods/`, overlay folders,
 recognises its own changes if they are still in a build, so they do no harm.
 Uninstalling is removing the mod's folder.
 
+
+## Explicit renderer payloads
+
+The server API accepts an explicit coherent build:
+
+```js
+await startServer({payloadRoot, payloadMods: [], strictPort: true, port: 47831, dataRoot});
+```
+
+This is a programmatic API for trusted launchers, not a new play.mjs CLI flag.
+The server exports PAYLOAD_API_VERSION = 1 so callers can refuse an older
+loader instead of silently starting a stock build with different plugins.
+The directory must contain renderer-payload.json:
+
+```json
+{"format":1,"version":"example","files":[{"path":"play/index.html","size":123,"sha256":"64 lowercase hex characters"}],"mods":[{"id":"example","name":"Example","module":"assets/example.js"}]}
+```
+
+Every served payload file is explicitly listed with its real size/hash. The
+entry must exist; paths, duplicates, symlinks, byte changes and missing modules
+are rejected. All bytes are verified before activation and again on read.
+Payload mode never falls back to a stock build's chunks and never discovers
+public plugins automatically. The payload registry and explicitly supplied
+payloadMods are combined; incompatible requested plugins or duplicate IDs fail
+before a server starts. Public plugin implementations remain separate from the
+payload. The existing boot.js owns runtime install/unmount/mountPane as before.
+
+strictPort refuses an occupied port rather than switching settings origins.
+dataRoot selects the native data root used for the ARENA2 fallback; omit it to
+use the normal app data path. Call close() and await its promise to stop serving.
+The stock build/discovery path retains its previous behavior.
+
+Payloads are immutable for one server session. Changing payload or plugin
+engine code requires a rebuild/restart, not the runtime UI Reload button. A
+private package should live outside public Git staging/release artifacts.
+
+Tests: node --test modloader/test/*.test.mjs. These exercise manifest and HTTP
+behavior with synthetic files; they do not log into a game or validate gameplay.
+UI row patch tests also cover renamed helpers and missing/ambiguous anchors.

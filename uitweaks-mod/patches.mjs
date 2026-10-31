@@ -64,6 +64,16 @@ const ROW_META = 'let l=[n.material,n.word,n.lit?`lit`:null,n.quest==null?null:F
 const ROW_META_NEW = 'let l=globalThis.__dfoUiTweaks?.cardLine?.(e)||[n.material,n.word,n.lit?`lit`:null,n.quest==null?null:Fo()].filter(Boolean).join(` · `);';
 const ROW_DECOR = 'El(o,e);let s=P===e&&F===t;';
 const ROW_DECOR_NEW = 'El(o,e),globalThis.__dfoUiTweaks?.decorateRow?.(o,e);let s=P===e&&F===t;';
+// The helpers are renamed by compilation. Keep the complete row shape and
+// require unique matches rather than pinning helper names Fo/El.
+export function patchPackRows(text) {
+  const meta=/let l=\[n\.material,n\.word,n\.lit\?`lit`:null,n\.quest==null\?null:([A-Za-z_$][\w$]*)\(\)\]\.filter\(Boolean\)\.join\(` · `\);/g;
+  const decor=/([A-Za-z_$][\w$]*)\(o,e\);let s=P===e&&F===t;/g;
+  if (text.split(ROW_NAME).length!==2 || [...text.matchAll(meta)].length!==1 || [...text.matchAll(decor)].length!==1) die('the pack/loot row builder shape is missing or ambiguous');
+  return text.replace(ROW_NAME,ROW_NAME_NEW)
+    .replace(meta,m=>m.replace('let l=','let l=globalThis.__dfoUiTweaks?.cardLine?.(e)||'))
+    .replace(decor,(_,fn)=>`${fn}(o,e),globalThis.__dfoUiTweaks?.decorateRow?.(o,e);let s=P===e&&F===t;`);
+}
 const ROWS_RX = /function ([A-Za-z0-9_$]+)\(e,t=-1,n=0,r=6\)\{let i=e\?\.rows\?\.length\?\?0;if\(!e\|\|e\.kind!==`items`/;
 const A_FILTER = ',item:e})),r=n.slice(0,t)';
 /* the loot filter is its own mod; the row builder calls this generic hook so
@@ -227,10 +237,7 @@ export function patch(store, log = () => {}) {
 
       /* the pack and loot-window rows share one builder: label, tag line and colour key */
       if (!text.includes('rowName?.')) {
-        if (!text.includes(ROW_NAME) || !text.includes(ROW_META) || !text.includes(ROW_DECOR)) {
-          die('the pack/loot row builder anchor was not found - aborting (nothing written)');
-        }
-        text = text.replace(ROW_NAME, ROW_NAME_NEW).replace(ROW_META, ROW_META_NEW).replace(ROW_DECOR, ROW_DECOR_NEW);
+        text = patchPackRows(text);
         log(`  patched ${card.rel} (pack/loot rows)`);
       } else log(`  pack/loot rows already patched (${card.rel})`);
 

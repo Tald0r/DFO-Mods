@@ -23,11 +23,13 @@ import path from 'node:path';
 import { GAME_ENTRY, userDataDir } from './game.mjs';
 import { ROOT, MODLOADER_ROOT, openBuild, viewOf } from './view.mjs';
 import { discoverMods, runPatches, renderRegistry } from './mods.mjs';
+import { openPayload, safePayloadPath } from './payload.mjs';
 
 const BOOT = path.join(MODLOADER_ROOT, 'boot.js');
 const BOOT_REL = 'assets/dfo-mods/boot.js';
 const REGISTRY_REL = 'assets/dfo-mods/registry.js';
 const TAG = '<script type="module" src="../assets/dfo-mods/boot.js"></script>';
+export const PAYLOAD_API_VERSION = 1;
 
 const MIME = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8',
@@ -47,20 +49,26 @@ const mimeOf = (rel) => MIME[path.extname(rel).toLowerCase()] || 'application/oc
  * that build. A file the pinned build does not have is read from the newest build
  * (or the seed), so a chunk load that starts after an update still resolves.
  */
-function buildCache({ app, log }) {
+function buildCache({ app, log, payloadRoot, payloadMods }) {
   let key = null;
   let pending = null;
   let pinned = null;
   let pinnedKey = null;
   const stateKey = () => {
+    if (payloadRoot) return 'explicit-payload';
     try { const st = fs.statSync(path.join(ROOT, 'state.json')); return `${st.mtimeMs}:${st.size}`; } catch { return 'none'; }
   };
   async function buildNow(k) {
-    const build = openBuild({ app });
+    const build = payloadRoot ? openPayload(payloadRoot) : openBuild({ app });
     if (build.error) throw new Error(build.error);
     const view = viewOf(build);
-    const mods = await discoverMods();
+    // Private payloads opt into each public mod explicitly; never auto-enable
+    // plugins written for another renderer's chunks.
+    const mods = payloadRoot ? (payloadMods ?? []) : await discoverMods();
     const out = runPatches(view, mods, log);
+    if (payloadRoot && out.failed.length) throw Error('Requested payload mod failed compatibility checks');
+    if (payloadRoot) out.registry = [...(build.registry ?? []), ...out.registry];
+    if (new Set(out.registry.map(m=>m.id)).size !== out.registry.length) throw Error('Duplicate mod IDs in selected build');
     log(`build v${build.version}: ${out.registry.length} mod${out.registry.length === 1 ? '' : 's'} applied`
       + (out.failed.length ? `, ${out.failed.length} not applied` : ''));
     return { key: k, version: build.version, view, registry: out.registry, failed: out.failed };
@@ -92,11 +100,11 @@ function buildCache({ app, log }) {
   };
 }
 
-function arena2File(name) {
+function arena2File(name, dataRoot = userDataDir()) {
   if (!/^[A-Za-z0-9._-]+$/.test(name)) return null;
   let dir = null;
   try {
-    const cfg = JSON.parse(fs.readFileSync(path.join(userDataDir(), 'config.json'), 'utf8'));
+    const cfg = JSON.parse(fs.readFileSync(path.join(dataRoot, 'config.json'), 'utf8'));
     dir = typeof cfg.arena2Path === 'string' ? cfg.arena2Path : null;
   } catch { return null; }
   if (!dir) return null;
@@ -117,18 +125,19 @@ function send(res, status, type, body = 'not found') {
   res.end(body);
 }
 
-async function respond(req, res, get) {
+async function respond(req, res, get, dataRoot) {
   let rel;
   try {
     rel = decodeURIComponent(new URL(req.url, 'http://127.0.0.1').pathname).split('/').filter(Boolean).join('/');
   } catch {
     return send(res, 400, 'text/plain', 'bad request');
   }
+  if (rel && !safePayloadPath(rel)) return send(res, 400, 'text/plain', 'bad path');
   if (rel === BOOT_REL) return send(res, 200, MIME['.js'], fs.readFileSync(BOOT));
 
   const arena = /^(?:play\/)?arena2\/([^/]+)$/.exec(rel);
   if (arena) {
-    const body = arena2File(arena[1]);
+    const body = arena2File(arena[1], dataRoot);
     return body ? send(res, 200, 'application/octet-stream', body) : send(res, 404, 'text/plain');
   }
 
@@ -175,17 +184,18 @@ async function respond(req, res, get) {
 export const DEFAULT_PORT = 47831;
 
 /** Start the server on 127.0.0.1. `app` names the launcher, for the bundled build. */
-export function startServer({ app = null, log = () => {}, port = Number(process.env.DFO_MODS_PORT) || DEFAULT_PORT } = {}) {
-  const get = buildCache({ app, log });
+export async function startServer({ app = null, payloadRoot = null, payloadMods = [], dataRoot, strictPort = false, log = () => {}, port = Number(process.env.DFO_MODS_PORT) || DEFAULT_PORT } = {}) {
+  const get = buildCache({ app, log, payloadRoot, payloadMods });
+  if (payloadRoot) await get.current(); // refuse broken packages before opening a game
   const server = http.createServer((req, res) => {
-    respond(req, res, get).catch((e) => {
+    respond(req, res, get, dataRoot).catch((e) => {
       log(`request failed: ${e?.message || e}`);
       if (!res.headersSent) send(res, 500, 'text/plain', 'error');
     });
   });
   return new Promise((resolve, reject) => {
     server.once('error', (e) => {
-      if (e.code !== 'EADDRINUSE' || !port) { reject(e); return; }
+      if (e.code !== 'EADDRINUSE' || !port || strictPort) { reject(e); return; }
       log(`port ${port} is taken by another program - using a free port for this launch (mod settings will not carry over)`);
       server.listen(0, '127.0.0.1', () => resolve(done()));
     });
@@ -193,7 +203,7 @@ export function startServer({ app = null, log = () => {}, port = Number(process.
     server.listen(port, '127.0.0.1');
     const done = () => ({
       url: `http://127.0.0.1:${server.address().port}/${GAME_ENTRY}`,
-      close: () => server.close(),
+      close: () => new Promise(resolve => { server.close(resolve); server.closeAllConnections?.(); }),
       get,
     });
   });
